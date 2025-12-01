@@ -16,18 +16,16 @@ st.set_page_config(
 )
 
 
-# --- Segédfüggvények az adatokhoz ---
+# --- Adatkezelés ---
 
 
 def ensure_data_dir() -> None:
-    """Létrehozza a data mappát, ha még nincs."""
     DATA_FILE.parent.mkdir(exist_ok=True)
 
 
 def load_data() -> list[dict]:
-    """Betölti a kiadásokat a JSON fájlból."""
+    """Betölti a tételeket (kiadás + bevétel)."""
     ensure_data_dir()
-
     if not DATA_FILE.exists():
         return []
 
@@ -36,26 +34,26 @@ def load_data() -> list[dict]:
             data = json.load(f)
         if not isinstance(data, list):
             return []
+
+        # Régi rekordok kompatibilitása: ha nincs 'tipus', tekintsük kiadásnak
+        for t in data:
+            if "tipus" not in t:
+                t["tipus"] = "kiadas"
         return data
     except json.JSONDecodeError:
-        # Ha sérült a fájl, inkább üres listával dolgozunk
         return []
 
 
 def save_data(data: list[dict]) -> None:
-    """Elmenti a kiadásokat a JSON fájlba."""
     ensure_data_dir()
     with DATA_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def load_settings() -> dict:
-    """Betölti a beállításokat (pl. havi keret)."""
     ensure_data_dir()
-
     if not SETTINGS_FILE.exists():
         return {}
-
     try:
         with SETTINGS_FILE.open("r", encoding="utf-8") as f:
             settings = json.load(f)
@@ -67,30 +65,35 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> None:
-    """Elmenti a beállításokat."""
     ensure_data_dir()
     with SETTINGS_FILE.open("w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
 
 def get_dataframe(data: list[dict]) -> pd.DataFrame:
-    """Lista → pandas DataFrame, dátum konvertálása."""
+    """Lista → DataFrame, dátum + típus rendezése."""
     if not data:
-        return pd.DataFrame(columns=["datum", "kategoria", "osszeg", "megjegyzes"])
+        return pd.DataFrame(columns=["datum", "tipus", "kategoria", "osszeg", "megjegyzes"])
 
     df = pd.DataFrame(data)
     df["datum"] = pd.to_datetime(df["datum"]).dt.date
     df["osszeg"] = df["osszeg"].astype(float)
+    if "tipus" not in df.columns:
+        df["tipus"] = "kiadas"
     return df
 
 
-# --- UI: oldalak ---
+# --- UI oldalak ---
 
 
-def oldal_uj_kiadas(data: list[dict]) -> None:
-    st.header("Új kiadás rögzítése")
+def oldal_uj_tetel(data: list[dict]) -> None:
+    st.header("Új tétel rögzítése")
 
-    alap_kategoriak = [
+    # Kiadás / Bevétel választás
+    tipus = st.radio("Típus", ["Kiadás", "Bevétel"], horizontal=True)
+    tipus_kod = "kiadas" if tipus == "Kiadás" else "bevetel"
+
+    alap_kategoriak_kiadas = [
         "Étkezés",
         "Lakhatás",
         "Közlekedés",
@@ -99,13 +102,22 @@ def oldal_uj_kiadas(data: list[dict]) -> None:
         "Bevásárlás",
         "Egyéb",
     ]
+    alap_kategoriak_bevetel = [
+        "Fizetés",
+        "Ösztöndíj",
+        "Ajándék",
+        "Egyéb bevétel",
+    ]
+    alap_kategoriak = (
+        alap_kategoriak_kiadas if tipus_kod == "kiadas" else alap_kategoriak_bevetel
+    )
 
-    with st.form("uj_kiadas_form"):
+    with st.form("uj_tetel_form"):
         col1, col2 = st.columns(2)
         with col1:
             datum = st.date_input("Dátum", value=date.today())
         with col2:
-            osszeg = st.number_input("Összeg (Ft)", min_value=0.0, step=100.0)
+            osszeg = st.number_input("Összeg (Ft)", min_value=0.0, step=1000.0)
 
         kategoria = st.selectbox("Kategória", alap_kategoriak)
         megjegyzes = st.text_input("Megjegyzés (opcionális)")
@@ -122,20 +134,21 @@ def oldal_uj_kiadas(data: list[dict]) -> None:
             "osszeg": float(osszeg),
             "kategoria": kategoria,
             "megjegyzes": megjegyzes.strip(),
+            "tipus": tipus_kod,
         }
 
         data.append(uj_tetel)
         save_data(data)
 
-        st.success("Kiadás elmentve!")
+        st.success("Tétel elmentve!")
         st.balloons()
 
 
-def oldal_kiadasok_listaja(data: list[dict]) -> None:
-    st.header("Kiadások listája")
+def oldal_tetelek_listaja(data: list[dict]) -> None:
+    st.header("Tételek listája")
 
     if not data:
-        st.info("Még nincs rögzített kiadás.")
+        st.info("Még nincs rögzített tétel.")
         return
 
     df = get_dataframe(data)
@@ -143,8 +156,13 @@ def oldal_kiadasok_listaja(data: list[dict]) -> None:
     # Szűrők
     st.subheader("Szűrés")
 
-    col1, col2, col3 = st.columns(3)
-
+    col0, col1, col2, col3 = st.columns(4)
+    with col0:
+        tipus_szuro = st.multiselect(
+            "Típus",
+            options=["kiadas", "bevetel"],
+            format_func=lambda x: "Kiadás" if x == "kiadas" else "Bevétel",
+        )
     with col1:
         min_datum = df["datum"].min()
         kezdo = st.date_input("Kezdő dátum", value=min_datum)
@@ -156,61 +174,78 @@ def oldal_kiadasok_listaja(data: list[dict]) -> None:
         kategoria_szuro = st.multiselect("Kategória", options=kategoriak)
 
     maszk = (df["datum"] >= kezdo) & (df["datum"] <= veg)
+    if tipus_szuro:
+        maszk &= df["tipus"].isin(tipus_szuro)
     if kategoria_szuro:
         maszk &= df["kategoria"].isin(kategoria_szuro)
 
     szurt = df[maszk].sort_values("datum", ascending=False)
 
     st.markdown("### Összegzés (szűrt adatokra)")
-    osszesen = szurt["osszeg"].sum()
-    st.metric("Összes kiadás", f"{osszesen:,.0f} Ft".replace(",", " "))
+    kiadasok = szurt.loc[szurt["tipus"] == "kiadas", "osszeg"].sum()
+    bevetel = szurt.loc[szurt["tipus"] == "bevetel", "osszeg"].sum()
+    egyenleg = bevetel - kiadasok
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("Kiadások", f"{kiadasok:,.0f} Ft".replace(",", " "))
+    with col_b:
+        st.metric("Bevételek", f"{bevetel:,.0f} Ft".replace(",", " "))
+    with col_c:
+        st.metric("Egyenleg", f"{egyenleg:,.0f} Ft".replace(",", " "))
 
     st.markdown("### Részletes lista")
-    st.dataframe(szurt, use_container_width=True)
+    df_megj = szurt.copy()
+    df_megj["tipus"] = df_megj["tipus"].map(
+        {"kiadas": "Kiadás", "bevetel": "Bevétel"}
+    )
+    st.dataframe(df_megj, use_container_width=True)
 
 
 def oldal_statisztika(data: list[dict], settings: dict) -> None:
     st.header("Statisztika")
 
     if not data:
-        st.info("Még nincs rögzített kiadás, így statisztika sem.")
+        st.info("Még nincs rögzített tétel, így statisztika sem.")
         return
 
     df = get_dataframe(data)
 
-    # Összesítés
+    # Összesített számok
     st.subheader("Összesítés")
 
-    osszesen = df["osszeg"].sum()
-    atlag = df["osszeg"].mean()
+    kiadasok = df.loc[df["tipus"] == "kiadas", "osszeg"].sum()
+    bevetel = df.loc[df["tipus"] == "bevetel", "osszeg"].sum()
+    egyenleg = bevetel - kiadasok
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Összes kiadás", f"{osszesen:,.0f} Ft".replace(",", " "))
+        st.metric("Összes kiadás", f"{kiadasok:,.0f} Ft".replace(",", " "))
     with col2:
-        st.metric("Átlagos kiadás", f"{atlag:,.0f} Ft".replace(",", " "))
+        st.metric("Összes bevétel", f"{bevetel:,.0f} Ft".replace(",", " "))
+    with col3:
+        st.metric("Egyenleg", f"{egyenleg:,.0f} Ft".replace(",", " "))
 
-    # --- Havi keret rész ---
-    st.subheader("Aktuális hónap kerete")
+    # Havi keret – csak kiadásokra
+    st.subheader("Aktuális hónap kerete (kiadásokra)")
 
     today = date.today()
-    # csak az aktuális hónap tételei
     df["honap"] = pd.to_datetime(df["datum"]).dt.to_period("M")
     aktualis_honap = pd.Period(today.strftime("%Y-%m"))
-    df_havi = df[df["honap"] == aktualis_honap]
-    havi_osszeg = df_havi["osszeg"].sum()
+    df_havi_kiadas = df[(df["honap"] == aktualis_honap) & (df["tipus"] == "kiadas")]
+    havi_kiadas = df_havi_kiadas["osszeg"].sum()
 
     havi_keret = float(settings.get("havi_keret", 0.0))
 
     if havi_keret > 0:
-        felhasznalt_szazalek = havi_osszeg / havi_keret
-        col3, col4 = st.columns(2)
-        with col3:
+        felhasznalt_szazalek = havi_kiadas / havi_keret if havi_keret > 0 else 0
+        col3a, col3b = st.columns(2)
+        with col3a:
             st.metric("Havi keret", f"{havi_keret:,.0f} Ft".replace(",", " "))
-        with col4:
+        with col3b:
             st.metric(
                 "Eddig elköltve ebben a hónapban",
-                f"{havi_osszeg:,.0f} Ft".replace(",", " "),
+                f"{havi_kiadas:,.0f} Ft".replace(",", " "),
             )
 
         st.progress(
@@ -218,30 +253,39 @@ def oldal_statisztika(data: list[dict], settings: dict) -> None:
             text=f"{felhasznalt_szazalek*100:.1f}% felhasználva",
         )
 
-        if havi_osszeg > havi_keret:
+        if havi_kiadas > havi_keret:
             st.error("Túllépted a havi keretet! 😬")
-        elif havi_osszeg > havi_keret * 0.8:
+        elif havi_kiadas > havi_keret * 0.8:
             st.warning("Már több mint 80%-át elköltötted a havi keretnek.")
     else:
         st.info("Még nincs beállítva havi keret. Menj a Beállítások menüpontra.")
 
-    # Kategória szerinti összeg
-    st.subheader("Kategóriánkénti kiadás")
-    by_cat = (
-        df.groupby("kategoria")["osszeg"]
+    # Kategóriánkénti kiadások
+    st.subheader("Kategóriánkénti kiadások")
+    by_cat_kiadas = (
+        df[df["tipus"] == "kiadas"]
+        .groupby("kategoria")["osszeg"]
         .sum()
         .sort_values(ascending=False)
     )
+    if not by_cat_kiadas.empty:
+        st.bar_chart(by_cat_kiadas)
+    else:
+        st.info("Még nincs kiadás, amit meg tudnánk jeleníteni kategóriánként.")
 
-    st.bar_chart(by_cat)
+    # Havi egyenleg grafikon
+    st.subheader("Havi egyenleg (bevétel - kiadás)")
 
-    # Havi bontás (összes hónapra)
-    st.subheader("Havi összes kiadás (minden hónap)")
-
-    by_month = df.groupby("honap")["osszeg"].sum().sort_index()
+    by_month = (
+        df.groupby(["honap", "tipus"])["osszeg"]
+        .sum()
+        .unstack(fill_value=0)
+        .rename(columns={"kiadas": "Kiadás", "bevetel": "Bevétel"})
+    )
+    by_month["Egyenleg"] = by_month.get("Bevétel", 0) - by_month.get("Kiadás", 0)
     by_month.index = by_month.index.astype(str)
 
-    st.line_chart(by_month)
+    st.line_chart(by_month[["Kiadás", "Bevétel", "Egyenleg"]])
 
 
 def oldal_beallitasok(settings: dict) -> dict:
@@ -250,7 +294,7 @@ def oldal_beallitasok(settings: dict) -> dict:
     jelenlegi_keret = float(settings.get("havi_keret", 0.0))
 
     uj_keret = st.number_input(
-        "Havi költségkeret (Ft)",
+        "Havi költségkeret (Ft) – csak kiadásokra",
         min_value=0.0,
         step=1000.0,
         value=jelenlegi_keret,
@@ -266,30 +310,28 @@ def oldal_beallitasok(settings: dict) -> dict:
     return settings
 
 
-# --- Fő program ---
+# --- Főprogram ---
 
 
 def main():
-    st.title("💰 Költségkövető és statisztika")
+    st.title("💰 Költségkövető és statisztika – bevételekkel")
 
-    # Adatok betöltése
     data = load_data()
     settings = load_settings()
 
-    # Oldal választása
     oldal = st.sidebar.radio(
         "Menü",
-        ("Új kiadás", "Kiadások listája", "Statisztika", "Beállítások"),
+        ("Új tétel", "Tételek listája", "Statisztika", "Beállítások"),
     )
 
-    if oldal == "Új kiadás":
-        oldal_uj_kiadas(data)
-    elif oldal == "Kiadások listája":
-        oldal_kiadasok_listaja(data)
+    if oldal == "Új tétel":
+        oldal_uj_tetel(data)
+    elif oldal == "Tételek listája":
+        oldal_tetelek_listaja(data)
     elif oldal == "Statisztika":
         oldal_statisztika(data, settings)
     elif oldal == "Beállítások":
-        settings = oldal_beallitasok(settings)
+        oldal_beallitasok(settings)
 
 
 if __name__ == "__main__":
