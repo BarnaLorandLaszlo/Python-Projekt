@@ -310,6 +310,32 @@ def oldal_beallitasok(settings: dict) -> dict:
     return settings
 
 
+def oldal_export(data: list[dict]) -> None:
+    st.header("Adatok exportálása (CSV)")
+
+    if not data:
+        st.info("Még nincs exportálható adat.")
+        return
+
+    df = get_dataframe(data)
+
+    st.markdown("### Összes tétel exportálása")
+
+     # String → UTF-8 BOM-os byte-tömb, hogy az Excel helyesen kezelje az ékezeteket
+    csv_all = df.to_csv(index=False, sep=";")
+    csv_bytes = csv_all.encode("utf-8-sig")
+
+    st.download_button(
+        label="Összes tétel exportálása (CSV)",
+        data=csv_bytes,
+        file_name="koltsegkoveto_osszes.csv",
+        mime="text/csv; charset=utf-8",
+    )
+
+    st.markdown("### Előnézet (utolsó 20 tétel)")
+    st.dataframe(df.tail(20), use_container_width=True)
+
+
 # --- Főprogram ---
 
 
@@ -321,7 +347,7 @@ def main():
 
     oldal = st.sidebar.radio(
         "Menü",
-        ("Új tétel", "Tételek listája", "Statisztika", "Beállítások"),
+        ("Új tétel", "Tételek listája", "Statisztika", "Beállítások", "Exportálás"),
     )
 
     if oldal == "Új tétel":
@@ -332,6 +358,8 @@ def main():
         oldal_statisztika(data, settings)
     elif oldal == "Beállítások":
         oldal_beallitasok(settings)
+    elif oldal == "Exportálás":
+        oldal_export(data)
 
 
 if __name__ == "__main__":
