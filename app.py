@@ -143,7 +143,6 @@ def oldal_uj_tetel(data: list[dict]) -> None:
         st.success("Tétel elmentve!")
         st.balloons()
 
-
 def oldal_tetelek_listaja(data: list[dict]) -> None:
     st.header("Tételek listája")
 
@@ -151,9 +150,12 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
         st.info("Még nincs rögzített tétel.")
         return
 
-    df = get_dataframe(data)
+    # DataFrame + egy "id" oszlop, ami a lista indexe
+    df = get_dataframe(data).copy()
+    df["id"] = df.index
 
-    # Szűrők
+    # --- Szűrők ---
+
     st.subheader("Szűrés")
 
     col0, col1, col2, col3 = st.columns(4)
@@ -161,6 +163,7 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
         tipus_szuro = st.multiselect(
             "Típus",
             options=["kiadas", "bevetel"],
+            default=["kiadas", "bevetel"],
             format_func=lambda x: "Kiadás" if x == "kiadas" else "Bevétel",
         )
     with col1:
@@ -181,6 +184,8 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
 
     szurt = df[maszk].sort_values("datum", ascending=False)
 
+    # --- Összegzés a szűrt adatokra ---
+
     st.markdown("### Összegzés (szűrt adatokra)")
     kiadasok = szurt.loc[szurt["tipus"] == "kiadas", "osszeg"].sum()
     bevetel = szurt.loc[szurt["tipus"] == "bevetel", "osszeg"].sum()
@@ -194,12 +199,123 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
     with col_c:
         st.metric("Egyenleg", f"{egyenleg:,.0f} Ft".replace(",", " "))
 
+    # --- Lista táblázatban ---
+
     st.markdown("### Részletes lista")
     df_megj = szurt.copy()
     df_megj["tipus"] = df_megj["tipus"].map(
         {"kiadas": "Kiadás", "bevetel": "Bevétel"}
     )
-    st.dataframe(df_megj, use_container_width=True)
+    st.dataframe(df_megj.drop(columns=["id"]), use_container_width=True)
+
+    # --- Szerkesztés / törlés szekció ---
+
+    st.markdown("### Tétel módosítása vagy törlése")
+
+    if szurt.empty:
+        st.info("A szűrők alapján nincs megjeleníthető tétel.")
+        return
+
+    # Legördülő lista a tételekhez (id + rövid leírás)
+    id_to_label = {}
+    for _, row in szurt.iterrows():
+        label_tipus = "Kiadás" if row["tipus"] == "kiadas" else "Bevétel"
+        label = (
+            f'#{int(row["id"])} | {label_tipus} | '
+            f'{row["datum"]} | {row["kategoria"]} | {row["osszeg"]:.0f} Ft'
+        )
+        id_to_label[int(row["id"])] = label
+
+    selected_id = st.selectbox(
+        "Tétel kiválasztása",
+        options=list(id_to_label.keys()),
+        format_func=lambda x: id_to_label[x],
+    )
+
+    selected_row = szurt[szurt["id"] == selected_id].iloc[0]
+
+    col_left, col_right = st.columns(2)
+
+    # --- Módosítás bal oldalon ---
+    with col_left:
+        st.subheader("Módosítás")
+
+        alap_kategoriak_kiadas = [
+            "Étkezés",
+            "Lakhatás",
+            "Közlekedés",
+            "Szórakozás",
+            "Egészség",
+            "Bevásárlás",
+            "Egyéb",
+        ]
+        alap_kategoriak_bevetel = [
+            "Fizetés",
+            "Ösztöndíj",
+            "Ajándék",
+            "Egyéb bevétel",
+        ]
+
+        tipus_index = 0 if selected_row["tipus"] == "kiadas" else 1
+
+        with st.form("edit_form"):
+            tipus_valaszto = st.radio(
+                "Típus",
+                ["Kiadás", "Bevétel"],
+                index=tipus_index,
+                horizontal=True,
+            )
+            tipus_kod = "kiadas" if tipus_valaszto == "Kiadás" else "bevetel"
+
+            if tipus_kod == "kiadas":
+                kategoriak_val = alap_kategoriak_kiadas.copy()
+            else:
+                kategoriak_val = alap_kategoriak_bevetel.copy()
+
+            if selected_row["kategoria"] not in kategoriak_val:
+                kategoriak_val.append(selected_row["kategoria"])
+
+            datum_uj = st.date_input("Dátum", value=selected_row["datum"])
+            osszeg_uj = st.number_input(
+                "Összeg (Ft)",
+                min_value=0.0,
+                step=1000.0,
+                value=float(selected_row["osszeg"]),
+            )
+            kategoria_uj = st.selectbox(
+                "Kategória",
+                options=kategoriak_val,
+                index=kategoriak_val.index(selected_row["kategoria"]),
+            )
+            megjegyzes_uj = st.text_input(
+                "Megjegyzés",
+                value=selected_row.get("megjegyzes", ""),
+            )
+
+            ment = st.form_submit_button("Változtatások mentése")
+
+        if ment:
+            if osszeg_uj <= 0:
+                st.error("Az összegnek nagyobbnak kell lennie 0-nál.")
+            else:
+                # frissítés az eredeti listában (selected_id = eredeti index!)
+                data[selected_id]["datum"] = datum_uj.isoformat()
+                data[selected_id]["osszeg"] = float(osszeg_uj)
+                data[selected_id]["kategoria"] = kategoria_uj
+                data[selected_id]["megjegyzes"] = megjegyzes_uj.strip()
+                data[selected_id]["tipus"] = tipus_kod
+                save_data(data)
+                st.success("Tétel módosítva. A frissítéshez töltsd újra az oldalt.")
+
+    # --- Törlés jobb oldalon ---
+    with col_right:
+        st.subheader("Törlés")
+        if st.button("Kiválasztott tétel törlése"):
+            data.pop(selected_id)
+            save_data(data)
+            st.success("Tétel törölve. A frissítéshez töltsd újra az oldalt.")
+
+
 
 
 def oldal_statisztika(data: list[dict], settings: dict) -> None:
