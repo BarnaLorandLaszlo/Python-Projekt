@@ -73,7 +73,9 @@ def save_settings(settings: dict) -> None:
 def get_dataframe(data: list[dict]) -> pd.DataFrame:
     """Lista → DataFrame, dátum + típus rendezése."""
     if not data:
-        return pd.DataFrame(columns=["datum", "tipus", "kategoria", "osszeg", "megjegyzes"])
+        return pd.DataFrame(
+            columns=["datum", "tipus", "kategoria", "osszeg", "megjegyzes"]
+        )
 
     df = pd.DataFrame(data)
     df["datum"] = pd.to_datetime(df["datum"]).dt.date
@@ -84,6 +86,86 @@ def get_dataframe(data: list[dict]) -> pd.DataFrame:
 
 
 # --- UI oldalak ---
+
+
+def oldal_dashboard(data: list[dict], settings: dict) -> None:
+    st.header("Kezdőlap – áttekintés")
+
+    if not data:
+        st.info("Még nincs rögzített tétel. Kezdd az 'Új tétel' menüpontnál.")
+        return
+
+    df = get_dataframe(data).copy()
+    df["honap"] = pd.to_datetime(df["datum"]).dt.to_period("M")
+
+    today = date.today()
+    aktualis_honap = pd.Period(today.strftime("%Y-%m"))
+    df_akt = df[df["honap"] == aktualis_honap]
+
+    havi_kiadas = df_akt.loc[df_akt["tipus"] == "kiadas", "osszeg"].sum()
+    havi_bevetel = df_akt.loc[df_akt["tipus"] == "bevetel", "osszeg"].sum()
+    havi_egyenleg = havi_bevetel - havi_kiadas
+
+    havi_keret = float(settings.get("havi_keret", 0.0))
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Aktuális havi kiadás", f"{havi_kiadas:,.0f} Ft".replace(",", " "))
+    with col2:
+        st.metric("Aktuális havi bevétel", f"{havi_bevetel:,.0f} Ft".replace(",", " "))
+    with col3:
+        st.metric("Havi egyenleg", f"{havi_egyenleg:,.0f} Ft".replace(",", " "))
+
+    st.divider()
+
+    st.subheader("Keret állapota (kiadásokra)")
+    if havi_keret > 0:
+        felhasznalt_szazalek = havi_kiadas / havi_keret
+
+        col4, col5 = st.columns(2)
+        with col4:
+            st.metric("Havi keret", f"{havi_keret:,.0f} Ft".replace(",", " "))
+        with col5:
+            maradek = max(havi_keret - havi_kiadas, 0)
+            st.metric("Maradék keret", f"{maradek:,.0f} Ft".replace(",", " "))
+
+        st.progress(
+            min(felhasznalt_szazalek, 1.0),
+            text=f"{felhasznalt_szazalek*100:.1f}% felhasználva",
+        )
+
+        if havi_kiadas > havi_keret:
+            st.error("Túllépted a havi keretet!")
+        elif havi_kiadas > havi_keret * 0.8:
+            st.warning("Már több mint 80%-át elköltötted a havi keretnek.")
+    else:
+        st.info("Nincs beállítva havi keret. Állítsd be a Beállításokban.")
+
+    st.divider()
+
+    st.subheader("Top 3 kiadási kategória (aktuális hónap)")
+    top = (
+        df_akt[df_akt["tipus"] == "kiadas"]
+        .groupby("kategoria")["osszeg"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(3)
+    )
+
+    if top.empty:
+        st.info("Ebben a hónapban még nincs kiadás.")
+    else:
+        st.bar_chart(top)
+
+    st.subheader("Legutóbbi 5 tétel")
+    df_recent = df.sort_values("datum", ascending=False).head(5).copy()
+    df_recent["tipus"] = df_recent["tipus"].map(
+        {"kiadas": "Kiadás", "bevetel": "Bevétel"}
+    )
+    st.dataframe(
+        df_recent[["datum", "tipus", "kategoria", "osszeg", "megjegyzes"]],
+        use_container_width=True,
+    )
 
 
 def oldal_uj_tetel(data: list[dict]) -> None:
@@ -143,6 +225,7 @@ def oldal_uj_tetel(data: list[dict]) -> None:
         st.success("Tétel elmentve!")
         st.balloons()
 
+
 def oldal_tetelek_listaja(data: list[dict]) -> None:
     st.header("Tételek listája")
 
@@ -155,7 +238,6 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
     df["id"] = df.index
 
     # --- Szűrők ---
-
     st.subheader("Szűrés")
 
     col0, col1, col2, col3 = st.columns(4)
@@ -185,7 +267,6 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
     szurt = df[maszk].sort_values("datum", ascending=False)
 
     # --- Összegzés a szűrt adatokra ---
-
     st.markdown("### Összegzés (szűrt adatokra)")
     kiadasok = szurt.loc[szurt["tipus"] == "kiadas", "osszeg"].sum()
     bevetel = szurt.loc[szurt["tipus"] == "bevetel", "osszeg"].sum()
@@ -200,7 +281,6 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
         st.metric("Egyenleg", f"{egyenleg:,.0f} Ft".replace(",", " "))
 
     # --- Lista táblázatban ---
-
     st.markdown("### Részletes lista")
     df_megj = szurt.copy()
     df_megj["tipus"] = df_megj["tipus"].map(
@@ -209,7 +289,6 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
     st.dataframe(df_megj.drop(columns=["id"]), use_container_width=True)
 
     # --- Szerkesztés / törlés szekció ---
-
     st.markdown("### Tétel módosítása vagy törlése")
 
     if szurt.empty:
@@ -298,14 +377,14 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
             if osszeg_uj <= 0:
                 st.error("Az összegnek nagyobbnak kell lennie 0-nál.")
             else:
-                # frissítés az eredeti listában (selected_id = eredeti index!)
                 data[selected_id]["datum"] = datum_uj.isoformat()
                 data[selected_id]["osszeg"] = float(osszeg_uj)
                 data[selected_id]["kategoria"] = kategoria_uj
                 data[selected_id]["megjegyzes"] = megjegyzes_uj.strip()
                 data[selected_id]["tipus"] = tipus_kod
                 save_data(data)
-                st.success("Tétel módosítva. A frissítéshez töltsd újra az oldalt.")
+                st.success("Tétel módosítva.")
+                st.rerun()
 
     # --- Törlés jobb oldalon ---
     with col_right:
@@ -313,9 +392,8 @@ def oldal_tetelek_listaja(data: list[dict]) -> None:
         if st.button("Kiválasztott tétel törlése"):
             data.pop(selected_id)
             save_data(data)
-            st.success("Tétel törölve. A frissítéshez töltsd újra az oldalt.")
-
-
+            st.success("Tétel törölve.")
+            st.rerun()
 
 
 def oldal_statisztika(data: list[dict], settings: dict) -> None:
@@ -422,7 +500,6 @@ def oldal_beallitasok(settings: dict) -> dict:
         st.success("Keret elmentve!")
 
     st.caption("A keretet az aktuális hónap kiadásaihoz hasonlítjuk a Statisztika oldalon.")
-
     return settings
 
 
@@ -437,7 +514,7 @@ def oldal_export(data: list[dict]) -> None:
 
     st.markdown("### Összes tétel exportálása")
 
-     # String → UTF-8 BOM-os byte-tömb, hogy az Excel helyesen kezelje az ékezeteket
+    # String → UTF-8 BOM-os byte-tömb, hogy az Excel helyesen kezelje az ékezeteket
     csv_all = df.to_csv(index=False, sep=";")
     csv_bytes = csv_all.encode("utf-8-sig")
 
@@ -463,10 +540,12 @@ def main():
 
     oldal = st.sidebar.radio(
         "Menü",
-        ("Új tétel", "Tételek listája", "Statisztika", "Beállítások", "Exportálás"),
+        ("Kezdőlap", "Új tétel", "Tételek listája", "Statisztika", "Beállítások", "Exportálás"),
     )
 
-    if oldal == "Új tétel":
+    if oldal == "Kezdőlap":
+        oldal_dashboard(data, settings)
+    elif oldal == "Új tétel":
         oldal_uj_tetel(data)
     elif oldal == "Tételek listája":
         oldal_tetelek_listaja(data)
